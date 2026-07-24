@@ -1,0 +1,11 @@
+replicaCount: 1
+
+image:
+  repository: 172.16.8.40/library/greet
+  tag: "latest"
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000 # FastAPI 포트

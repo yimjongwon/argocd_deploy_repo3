@@ -1,0 +1,141 @@
+pipeline {
+    // K8s 일꾼 파드 안에 'kaniko' 컨테이너를 함께 띄우도록 정의합니다.
+    agent {
+        kubernetes {
+            // k8s 클러스터 안에서 Docker 이미지를 만들기 위한 pod(컨테이너)
+            yaml '''
+            apiVersion: v1
+            kind: Pod
+            spec:
+              containers:
+              - name: kaniko-fortune
+                image: gcr.io/kaniko-project/executor:debug
+                command:
+                - sleep
+                args:
+                - 9999999
+              - name: kaniko-greet
+                image: gcr.io/kaniko-project/executor:debug
+                command:
+                - sleep
+                args:
+                - 9999999
+              # K8s가 기본으로 띄워주는 jnlp(인바운드 에이전트) 컨테이너도 함께 실행됩니다.
+            '''
+        }
+    }
+    // 필요한 환경변수 정의
+    environment {
+        HARBOR_URL = '172.16.8.40' 
+        HARBOR_CRED = 'harbor-cred'
+        GITEA_CRED = 'gitea-cred'
+        // 주의: 아래 변수에서 'http://'를 제거해야 나중에 git push URL 조합 시 에러가 나지 않습니다.
+        GITEA_REPO = '172.16.8.42/admin/argocd_deploy.git'
+        // 빌드번호는 1,2,3,4 ... 형식으로 증가하는데 그걸 이미지 태그로 사용할 예정 v1,v1,v3,v4...
+        IMAGE_TAG = "v${env.BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                //git url: 'http://172.16.8.42/admin/argocd_deploy.git', branch: 'master', credentialsId: 'gitea-cred'
+            }
+        }
+
+
+        //  1. Fortune 앱 빌드 및 개별 태그 업데이트
+        stage('Build & Push: Fortune') {
+            when { 
+                // 어느 하나라도 만족하면
+                anyOf{
+                    // apps/fortune/ 하위에 변화가 있거나
+                    changeset "hello/apps/fortune/**" 
+                    // jenkins 서버에서 직접 실행했을때
+                    triggeredBy 'UserIdCause'
+                }
+            }
+            steps {
+                container('kaniko-fortune') {
+                    withCredentials([usernamePassword(credentialsId: HARBOR_CRED, passwordVariable: 'PASS', usernameVariable: 'USER')]){
+                        sh """
+                            # 1. Harbor 인증 파일 생성
+                            AUTH=\$(echo -n "${USER}:${PASS}" | base64 | tr -d '\\n')
+                            mkdir -p /kaniko/.docker
+                            echo "{\\"auths\\":{\\"${HARBOR_URL}\\":{\\"auth\\":\\"\${AUTH}\\"}}}" > /kaniko/.docker/config.json
+                            
+                            # 2. Fortune 빌드 및 푸시 
+                            /kaniko/executor \\
+                            --context ${WORKSPACE}/hello/apps/fortune \\
+                            --dockerfile ${WORKSPACE}/hello/apps/fortune/Dockerfile \\
+                            --destination ${HARBOR_URL}/library/fortune:${IMAGE_TAG} \\
+                            --insecure
+                        """
+                }
+
+                    // 빌드가 성공했을 때만! fortune: 부터 첫 번째 tag: 가 나오는 구간까지만 태그를 변경합니다.
+                    script {
+                        echo "Fortune 앱의 Helm 태그만 ${IMAGE_TAG} 로 변경합니다."
+                        sh "sed -i '/^fortune:/,/tag:/ s/tag: .*/tag: \"${IMAGE_TAG}\"/' hello/values.yaml"
+                    }
+                }
+            }
+        }
+
+        // 2. Greet 앱 빌드 및 개별 태그 업데이트
+        stage('Build & Push: Greet') {
+            when { 
+                // 어느 하나라도 만족하면
+                anyOf{
+                    // apps/greet/ 하위에 변화가 있거나
+                    changeset "hello/apps/greet/**" 
+                    // jenkins 서버에서 직접 실행했을때
+                    triggeredBy 'UserIdCause'
+                } 
+            }
+            steps {
+                container('kaniko-greet') {
+                    withCredentials([usernamePassword(credentialsId: HARBOR_CRED, passwordVariable: 'PASS', usernameVariable: 'USER')]){
+                        sh """
+                            # 1. Harbor 인증 파일 생성
+                            AUTH=\$(echo -n "${USER}:${PASS}" | base64 | tr -d '\\n')
+                            mkdir -p /kaniko/.docker
+                            echo "{\\"auths\\":{\\"${HARBOR_URL}\\":{\\"auth\\":\\"\${AUTH}\\"}}}" > /kaniko/.docker/config.json
+                            
+                            # 2. Fortune 빌드 및 푸시 
+                            /kaniko/executor \\
+                            --context ${WORKSPACE}/hello/apps/greet \\
+                            --dockerfile ${WORKSPACE}/hello/apps/greet/Dockerfile \\
+                            --destination ${HARBOR_URL}/library/greet:${IMAGE_TAG} \\
+                            --insecure
+                        """
+                }
+                    // 빌드가 성공했을 때만! greet: 구간의 태그만 변경합니다.
+                    script {
+                        echo "Greet 앱의 Helm 태그만 ${IMAGE_TAG} 로 변경합니다."
+                        sh "sed -i '/^greet:/,/tag:/ s/tag: .*/tag: \"${IMAGE_TAG}\"/' hello/values.yaml"
+                    }
+                }
+            }
+        }
+
+
+        //  3. Gitea에 수정된 차트 반영 
+        stage('Git Push to Gitea') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: GITEA_CRED, passwordVariable: 'GIT_PW', usernameVariable: 'GIT_ID')]) {
+                    sh """
+                        git config user.name "Jenkins-CI"
+                        git config user.email "jenkins@cicd.local"
+                        git add hello/values.yaml
+                        
+                        # git diff를 통해 변경된 사항이 있을 때만 commit과 push를 수행합니다. 
+                        # (변경 사항이 없는데 commit을 시도하면 Jenkins 파이프라인이 실패 처리됩니다.)
+                        git diff-index --quiet HEAD || git commit -m "Update image tags to ${IMAGE_TAG} [ci skip]"
+                        git push http://${GIT_ID}:${GIT_PW}@${GITEA_REPO} HEAD:master
+                    """
+                }
+            }
+        }
+    }
+}

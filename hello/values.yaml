@@ -1,0 +1,11 @@
+# Jenkins CI/CD 파이프라인에서 빌드 후 이미지 태그를 업데이트하는 영역입니다.
+
+fortune:
+  replicaCount: 1
+  image:
+    tag: "latest"
+
+greet:
+  replicaCount: 1
+  image:
+    tag: "latest"
