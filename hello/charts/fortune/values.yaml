@@ -1,7 +1,10 @@
 replicaCount: 1
 
 image:
-  repository: 172.16.8.40/library/fortune
+  # harbor
+  # repository: 172.16.8.40/library/fortune
+  # ecr
+  repository: 336925002301.dkr.ecr.ap-northeast-2.amazonaws.com/fortune
   tag: "latest"
   pullPolicy: Always
 
