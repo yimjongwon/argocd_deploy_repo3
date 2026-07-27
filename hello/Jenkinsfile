@@ -26,11 +26,11 @@ pipeline {
     }
     // 필요한 환경변수 정의
     environment {
-        HARBOR_URL = '172.16.8.40' 
-        HARBOR_CRED = 'harbor-cred'
-        GITEA_CRED = 'gitea-cred'
+        ECR_URL = '336925002301.dkr.ecr.ap-northeast-2.amazonaws.com' 
+        AWS_CRED = 'aws-cred'
+        GITHUB_CRED = 'github-cred'
         // 주의: 아래 변수에서 'http://'를 제거해야 나중에 git push URL 조합 시 에러가 나지 않습니다.
-        GITEA_REPO = '172.16.8.42/admin/argocd_deploy.git'
+        GITHUB_REPO = 'github.com/yimjongwon/argocd_deploy_repo3.git'
         // 빌드번호는 1,2,3,4 ... 형식으로 증가하는데 그걸 이미지 태그로 사용할 예정 v1,v1,v3,v4...
         IMAGE_TAG = "v${env.BUILD_NUMBER}"
     }
@@ -57,22 +57,21 @@ pipeline {
             }
             steps {
                 container('kaniko-fortune') {
-                    withCredentials([usernamePassword(credentialsId: HARBOR_CRED, passwordVariable: 'PASS', usernameVariable: 'USER')]){
+                    // AWS 인증 정보 불러오기 (Kaniko는 ECR용 크레덴셜 헬퍼를 내장하고 있습니다)
+                    withCredentials([usernamePassword(credentialsId: AWS_CRED, passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: 'AWS_ACCESS_KEY_ID')]){
                         sh """
-                            # 1. Harbor 인증 파일 생성
-                            AUTH=\$(echo -n "${USER}:${PASS}" | base64 | tr -d '\\n')
+                            # ECR 인증을 위해 Kaniko 설정 파일에 ecr-login 헬퍼 지정
                             mkdir -p /kaniko/.docker
-                            echo "{\\"auths\\":{\\"${HARBOR_URL}\\":{\\"auth\\":\\"\${AUTH}\\"}}}" > /kaniko/.docker/config.json
+                            echo '{"credsStore":"ecr-login"}' > /kaniko/.docker/config.json
                             
-                            # 2. Fortune 빌드 및 푸시 
+                            # Fortune 빌드 및 ECR로 푸시 (도착지 주소를 ECR 창고 이름으로 변경)
                             /kaniko/executor \\
                             --context ${WORKSPACE}/hello/apps/fortune \\
                             --dockerfile ${WORKSPACE}/hello/apps/fortune/Dockerfile \\
-                            --destination ${HARBOR_URL}/library/fortune:${IMAGE_TAG} \\
-                            --insecure
+                            --destination ${ECR_URL}/fortune:${IMAGE_TAG}
                         """
                 }
-
+                    
                     // 빌드가 성공했을 때만! fortune: 부터 첫 번째 tag: 가 나오는 구간까지만 태그를 변경합니다.
                     script {
                         echo "Fortune 앱의 Helm 태그만 ${IMAGE_TAG} 로 변경합니다."
@@ -95,19 +94,18 @@ pipeline {
             }
             steps {
                 container('kaniko-greet') {
-                    withCredentials([usernamePassword(credentialsId: HARBOR_CRED, passwordVariable: 'PASS', usernameVariable: 'USER')]){
+                                 // AWS 인증 정보 불러오기 (Kaniko는 ECR용 크레덴셜 헬퍼를 내장하고 있습니다)
+                    withCredentials([usernamePassword(credentialsId: AWS_CRED, passwordVariable: 'AWS_SECRET_ACCESS_KEY', usernameVariable: 'AWS_ACCESS_KEY_ID')]){
                         sh """
-                            # 1. Harbor 인증 파일 생성
-                            AUTH=\$(echo -n "${USER}:${PASS}" | base64 | tr -d '\\n')
+                            # ECR 인증을 위해 Kaniko 설정 파일에 ecr-login 헬퍼 지정
                             mkdir -p /kaniko/.docker
-                            echo "{\\"auths\\":{\\"${HARBOR_URL}\\":{\\"auth\\":\\"\${AUTH}\\"}}}" > /kaniko/.docker/config.json
+                            echo '{"credsStore":"ecr-login"}' > /kaniko/.docker/config.json
                             
-                            # 2. Fortune 빌드 및 푸시 
+                            # Fortune 빌드 및 ECR로 푸시 (도착지 주소를 ECR 창고 이름으로 변경)
                             /kaniko/executor \\
                             --context ${WORKSPACE}/hello/apps/greet \\
                             --dockerfile ${WORKSPACE}/hello/apps/greet/Dockerfile \\
-                            --destination ${HARBOR_URL}/library/greet:${IMAGE_TAG} \\
-                            --insecure
+                            --destination ${ECR_URL}/greet:${IMAGE_TAG}
                         """
                 }
                     // 빌드가 성공했을 때만! greet: 구간의 태그만 변경합니다.
@@ -121,9 +119,9 @@ pipeline {
 
 
         //  3. Gitea에 수정된 차트 반영 
-        stage('Git Push to Gitea') {
+        stage('Git Push to Github') {
             steps {
-                withCredentials([usernamePassword(credentialsId: GITEA_CRED, passwordVariable: 'GIT_PW', usernameVariable: 'GIT_ID')]) {
+                withCredentials([usernamePassword(credentialsId: GITHUB_CRED, passwordVariable: 'GIT_PW', usernameVariable: 'GIT_ID')]) {
                     sh """
                         git config user.name "Jenkins-CI"
                         git config user.email "jenkins@cicd.local"
@@ -132,7 +130,7 @@ pipeline {
                         # git diff를 통해 변경된 사항이 있을 때만 commit과 push를 수행합니다. 
                         # (변경 사항이 없는데 commit을 시도하면 Jenkins 파이프라인이 실패 처리됩니다.)
                         git diff-index --quiet HEAD || git commit -m "Update image tags to ${IMAGE_TAG} [ci skip]"
-                        git push http://${GIT_ID}:${GIT_PW}@${GITEA_REPO} HEAD:master
+                        git push http://${GIT_ID}:${GIT_PW}@${GITHUB_REPO} HEAD:master
                     """
                 }
             }
