@@ -3,7 +3,7 @@
 fortune:
   replicaCount: 1
   image:
-    tag: "v1"
+    tag: "v2"
 
 greet:
   replicaCount: 1
