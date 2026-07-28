@@ -26,7 +26,7 @@ pipeline {
     }
     
     environment {
-        ECR_URL = '401007297971.dkr.ecr.ap-northeast-2.amazonaws.com'
+        ECR_URL = '336925002301.dkr.ecr.ap-northeast-2.amazonaws.com'
         GITHUB_CRED = 'github-cred' // GitHub 푸시용 인증정보는 그대로 유지
         GITHUB_REPO = 'github.com/yimjongwon/argocd_deploy_repo3.git'
         IMAGE_TAG = "v${env.BUILD_NUMBER}" 
