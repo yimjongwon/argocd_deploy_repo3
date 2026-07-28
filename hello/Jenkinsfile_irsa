@@ -1,0 +1,114 @@
+pipeline {
+    // 1. K8s 일꾼 파드 정의
+    agent {
+        kubernetes {
+            yaml '''
+            apiVersion: v1
+            kind: Pod
+            spec:
+              # 핵심 1: 이 일꾼 파드도 ECR 권한이 있는 jenkins-sa 신분증을 사용하도록 지정!
+              serviceAccountName: jenkins-sa
+              containers:
+              - name: kaniko-fortune
+                image: gcr.io/kaniko-project/executor:debug
+                command:
+                - sleep
+                args:
+                - 9999999
+              - name: kaniko-greet
+                image: gcr.io/kaniko-project/executor:debug
+                command:
+                - sleep
+                args:
+                - 9999999
+            '''
+        }
+    }
+    
+    environment {
+        ECR_URL = '401007297971.dkr.ecr.ap-northeast-2.amazonaws.com'
+        GITHUB_CRED = 'github-cred' // GitHub 푸시용 인증정보는 그대로 유지
+        GITHUB_REPO = 'github.com/yimjongwon/argocd_deploy_repo3.git'
+        IMAGE_TAG = "v${env.BUILD_NUMBER}" 
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build & Push: Fortune') {
+            when { 
+                anyOf{
+                    changeset "hello/apps/fortune/**"
+                    triggeredBy 'UserIdCause'    
+                }
+            }
+            steps {
+                container('kaniko-fortune') {
+                    // 핵심 2: AWS credentials 껍질(withCredentials)이 통째로 사라집니다!
+                    sh """
+                        # Kaniko에게 ECR 전용 헬퍼를 쓰라고만 알려줍니다.
+                        mkdir -p /kaniko/.docker
+                        echo '{"credsStore":"ecr-login"}' > /kaniko/.docker/config.json
+                        
+                        # 헬퍼가 'jenkins-sa'의 IRSA 토큰을 자동으로 인식하여 ECR에 로그인합니다.
+                        /kaniko/executor \\
+                        --context ${WORKSPACE}/hello/apps/fortune \\
+                        --dockerfile ${WORKSPACE}/hello/apps/fortune/Dockerfile \\
+                        --destination ${ECR_URL}/fortune:${IMAGE_TAG}
+                    """
+                }
+                script {
+                    echo "Fortune 앱의 Helm 태그만 ${IMAGE_TAG} 로 변경합니다."
+                    sh "sed -i '/^fortune:/,/tag:/ s/tag: .*/tag: \"${IMAGE_TAG}\"/' hello/values.yaml"
+                }
+            }
+        }
+
+        stage('Build & Push: Greet') {
+            when { 
+                anyOf{
+                    changeset "hello/apps/greet/**"
+                    triggeredBy 'UserIdCause'    
+                }
+            }
+            steps {
+                container('kaniko-greet') {
+                    // (Fortune과 동일하게 withCredentials 제거)
+                    sh """
+                        mkdir -p /kaniko/.docker
+                        echo '{"credsStore":"ecr-login"}' > /kaniko/.docker/config.json
+                        
+                        /kaniko/executor \\
+                        --context ${WORKSPACE}/hello/apps/greet \\
+                        --dockerfile ${WORKSPACE}/hello/apps/greet/Dockerfile \\
+                        --destination ${ECR_URL}/greet:${IMAGE_TAG}
+                    """
+                }
+                script {
+                    echo "Greet 앱의 Helm 태그만 ${IMAGE_TAG} 로 변경합니다."
+                    sh "sed -i '/^greet:/,/tag:/ s/tag: .*/tag: \"${IMAGE_TAG}\"/' hello/values.yaml"
+                }
+            }
+        }
+
+        stage('Git Push to GitHub') {
+            steps {
+                // 외부망인 GitHub으로 나갈 때는 기존처럼 토큰(비밀번호) 인증이 필요합니다.
+                withCredentials([usernamePassword(credentialsId: GITHUB_CRED, passwordVariable: 'GIT_PW', usernameVariable: 'GIT_ID')]) {
+                    sh """
+                        git config user.name "Jenkins-CI"
+                        git config user.email "jenkins@cicd.local"
+                        git add hello/values.yaml
+                        
+                        git diff-index --quiet HEAD || git commit -m "Update image tags to ${IMAGE_TAG} [ci skip]"
+                        git push https://${GIT_ID}:${GIT_PW}@${GITHUB_REPO} HEAD:master
+                    """
+                }
+            }
+        }
+    }
+}
