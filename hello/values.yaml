@@ -3,9 +3,9 @@
 fortune:
   replicaCount: 1
   image:
-    tag: "latest"
+    tag: "v3"
 
 greet:
   replicaCount: 1
   image:
-    tag: "latest"
+    tag: "v3"
